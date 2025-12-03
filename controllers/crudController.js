@@ -8,6 +8,8 @@ import fs from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// IMPORTANT: REMOVED THE STRAY "git" ON LINE 11
+
 // @desc    Get all CRUD items for user
 // @route   GET /api/crud
 // @access  Private
@@ -344,5 +346,5 @@ export const getAllCRUDItems = asyncHandler(async (req, res) => {
       pages: Math.ceil(total / limit)
     }
   });
-
 });
+
