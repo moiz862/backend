@@ -27,7 +27,11 @@ import paymentRoutes from './routes/payments.js';
 const app = express();
 const server = http.createServer(app);
 
-// Socket.io setup with CORS - FIXED CONFIGURATION
+// Get port from Railway or default
+const PORT = process.env.PORT || 5000;
+const HOST = '0.0.0.0'; // Railway requires 0.0.0.0
+
+// Socket.io setup for Railway
 const io = new Server(server, {
   cors: {
     origin: process.env.CLIENT_URL || "http://localhost:3000",
@@ -35,7 +39,9 @@ const io = new Server(server, {
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"]
   },
-  transports: ['websocket', 'polling'] // Add multiple transports
+  transports: ['websocket', 'polling'],
+  pingTimeout: 60000, // Increased for Railway
+  pingInterval: 25000
 });
 
 // Make io accessible to routes
@@ -46,19 +52,22 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// Rate limiting
+// Rate limiting - adjusted for Railway
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000
+  max: 500, // Reduced for Railway
+  message: 'Too many requests from this IP'
 });
-app.use(limiter);
+app.use('/api/', limiter);
 
 // Body parser middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// File upload middleware
+// File upload middleware - use /tmp directory for Railway
 app.use(fileUpload({
+  useTempFiles: true,
+  tempFileDir: '/tmp/',
   createParentPath: true,
   limits: { 
     fileSize: 5 * 1024 * 1024
@@ -76,14 +85,8 @@ app.use(cors({
 
 // Custom XSS protection middleware
 app.use((req, res, next) => {
-  if (req.body) {
-    sanitizeObject(req.body);
-  }
-  
-  if (req.query) {
-    sanitizeObject(req.query);
-  }
-  
+  if (req.body) sanitizeObject(req.body);
+  if (req.query) sanitizeObject(req.query);
   next();
 });
 
@@ -94,20 +97,18 @@ function sanitizeObject(obj) {
     } else if (typeof obj[key] === 'string') {
       obj[key] = obj[key].replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
       obj[key] = obj[key].replace(/<[^>]*(>|$)/g, "");
-      obj[key] = obj[key].replace(/javascript:/gi, "");
-      obj[key] = obj[key].replace(/on\w+=/gi, "");
     }
   }
 }
 
-// Ensure uploads directory exists
+// Ensure uploads directory exists (use /tmp for Railway)
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
   console.log('✅ Created uploads directory');
 }
 
-// Static files - serve uploads directory
+// Static files
 app.use('/uploads', express.static(uploadsDir));
 
 // Routes
@@ -117,13 +118,19 @@ app.use('/api/crud', crudRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/payments', paymentRoutes);
 
-// Health check
+// Health check endpoint for Railway
 app.get('/api/health', (req, res) => {
+  const dbState = mongoose.connection.readyState;
+  const dbStatus = dbState === 1 ? 'connected' : 'disconnected';
+  
   res.status(200).json({
     success: true,
-    message: 'Server is running',
+    message: 'Server is running on Railway',
     timestamp: new Date().toISOString(),
-    socketConnections: io.engine.clientsCount
+    service: 'backend-api',
+    database: dbStatus,
+    socketConnections: io.engine.clientsCount,
+    uptime: process.uptime()
   });
 });
 
@@ -148,11 +155,10 @@ app.get('/api/socket-status', (req, res) => {
   });
 });
 
-// Socket.io connection handling with better error handling
+// Socket.io connection handling
 io.on('connection', (socket) => {
   console.log('✅ User connected:', socket.id);
 
-  // Join user to their personal room
   socket.on('join_user', (userId) => {
     if (userId) {
       socket.join(userId.toString());
@@ -165,7 +171,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Leave user room
   socket.on('leave_user', (userId) => {
     if (userId) {
       socket.leave(userId.toString());
@@ -173,10 +178,8 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle typing indicators
   socket.on('typing_start', (data) => {
     if (data && data.receiverId) {
-      console.log(`⌨️ User ${data.userId} typing to ${data.receiverId}`);
       socket.to(data.receiverId).emit('user_typing', {
         userId: data.userId,
         userName: data.userName,
@@ -187,7 +190,6 @@ io.on('connection', (socket) => {
 
   socket.on('typing_stop', (data) => {
     if (data && data.receiverId) {
-      console.log(`❌ User ${data.userId} stopped typing to ${data.receiverId}`);
       socket.to(data.receiverId).emit('user_typing', {
         userId: data.userId,
         userName: data.userName,
@@ -196,29 +198,27 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle disconnect
   socket.on('disconnect', (reason) => {
     console.log('❌ User disconnected:', socket.id, 'Reason:', reason);
   });
 
-  // Send welcome message
   socket.emit('welcome', {
-    message: 'Connected to server successfully!',
+    message: 'Connected to Railway server successfully!',
     socketId: socket.id,
     timestamp: new Date().toISOString()
   });
 });
 
-// Basic error handler middleware
+// Error handlers
 app.use((err, req, res, next) => {
-  console.error('Error stack:', err.stack);
+  console.error('Error:', err.message);
   res.status(500).json({
     success: false,
-    message: 'Something went wrong!'
+    message: 'Internal server error',
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined
   });
 });
 
-// Handle 404
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -227,27 +227,40 @@ app.use((req, res) => {
 });
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (err, promise) => {
-  console.log('Unhandled Rejection at:', promise, 'reason:', err);
-  process.exit(1);
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled Rejection:', err);
+  // Don't exit in production
 });
 
 // Connect to MongoDB and start server
-const PORT = process.env.PORT || 5000;
+const MONGODB_URI = process.env.MONGODB_URI;
+if (!MONGODB_URI) {
+  console.error('❌ MONGODB_URI is not defined in environment variables');
+  process.exit(1);
+}
 
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/crudapp')
+// MongoDB connection options for Railway
+const mongooseOptions = {
+  maxPoolSize: 10,
+  serverSelectionTimeoutMS: 10000,
+  socketTimeoutMS: 45000,
+};
+
+mongoose.connect(MONGODB_URI, mongooseOptions)
   .then(() => {
-    console.log('✅ MongoDB Connected');
-    server.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-      console.log(`📁 Uploads directory: ${uploadsDir}`);
-      console.log(`🔌 Socket.io enabled on port ${PORT}`);
+    console.log('✅ MongoDB Connected to Railway');
+    
+    server.listen(PORT, HOST, () => {
+      console.log(`🚀 Server running on ${HOST}:${PORT}`);
+      console.log(`🔗 Health check: http://${HOST}:${PORT}/api/health`);
+      console.log(`🔌 Socket.io enabled`);
+      console.log('🚂 Deployed on Railway');
     });
   })
   .catch(err => {
-    console.error('❌ Database connection error:', err);
+    console.error('❌ Database connection error:', err.message);
     process.exit(1);
   });
 
 export { io };
+
