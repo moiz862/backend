@@ -106,61 +106,7 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
   console.log('✅ Created uploads directory');
 }
-let isConnected = false;
 
-async function connectToMongoDB() {
-  if (isConnected) {
-    console.log('✅ Using existing MongoDB connection');
-    return;
-  }
-
-  try {
-    await mongoose.connect(
-      process.env.MONGODB_URI || 'mongodb://localhost:27017/crudapp',
-      {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-        // Add these options for better connection handling
-        serverSelectionTimeoutMS: 5000,
-        socketTimeoutMS: 45000,
-      }
-    );
-    
-    isConnected = true;
-    console.log('✅ MongoDB Connected Successfully');
-    
-    // Handle connection events
-    mongoose.connection.on('error', (err) => {
-      console.error('❌ MongoDB connection error:', err);
-      isConnected = false;
-    });
-    
-    mongoose.connection.on('disconnected', () => {
-      console.log('🔌 MongoDB disconnected');
-      isConnected = false;
-    });
-    
-  } catch (error) {
-    console.error('❌ Database connection error:', error);
-    // Don't exit process in middleware - just log error
-    isConnected = false;
-  }
-}
-
-// Middleware with proper async handling
-app.use(async (req, res, next) => {
-  try {
-    await connectToMongoDB();
-    next();
-  } catch (error) {
-    // Send proper error response instead of crashing
-    res.status(503).json({ 
-      success: false, 
-      message: 'Database connection failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
 // Static files - serve uploads directory
 app.use('/uploads', express.static(uploadsDir));
 
@@ -287,21 +233,21 @@ process.on('unhandledRejection', (err, promise) => {
 });
 
 // Connect to MongoDB and start server
-// const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000;
 
-// mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/crudapp')
-//   .then(() => {
-//     console.log('✅ MongoDB Connected');
-//     server.listen(PORT, () => {
-//       console.log(`🚀 Server running on port ${PORT}`);
-//       console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-//       console.log(`📁 Uploads directory: ${uploadsDir}`);
-//       console.log(`🔌 Socket.io enabled on port ${PORT}`);
-//     });
-//   })
-//   .catch(err => {
-//     console.error('❌ Database connection error:', err);
-//     process.exit(1);
-//   });
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/crudapp')
+  .then(() => {
+    console.log('✅ MongoDB Connected');
+    server.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
+      console.log(`📁 Uploads directory: ${uploadsDir}`);
+      console.log(`🔌 Socket.io enabled on port ${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('❌ Database connection error:', err);
+    process.exit(1);
+  });
 
 export { io };
